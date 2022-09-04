@@ -30,11 +30,11 @@ pub mod lex {
     }
 
     trait IterExt<T> {
-        fn peek_two(&self) -> Option<T>;
+        fn peek_two_ahead(&self) -> Option<T>;
     }
     impl<I: Iterator + Clone> IterExt<I::Item> for I {
         #[must_use]
-        fn peek_two(&self) -> Option<I::Item> {
+        fn peek_two_ahead(&self) -> Option<I::Item> {
             self.clone().skip(1).next()
         }
     }
@@ -49,7 +49,7 @@ pub mod lex {
         fn maybe_consume_op(&mut self) -> Option<Token> {
             use Token::*;
 
-            let two_ahead = self.iter.peek_two();
+            let two_ahead = self.iter.peek_two_ahead();
 
             let out = match *self.iter.peek()? {
                 ';' => Semicolon,
@@ -107,65 +107,56 @@ pub mod lex {
         fn try_consume_num(&mut self) -> Result<Token, InvalidNumError> {
             // We only get to this point when the next token is a number (or at least, is supposed
             // to be a number).
+            // '+' and '-' are considered unary ops and are parsed by the op method, not here.
 
             // Take up to either `.`, `e`, or the end of the num.
             let mut buf: String = self
                 .iter
-                .peeking_take_while(|c| c.is_ascii_digit() || matches!(c, ' ' | '_'))
+                .peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_'))
+                // .peeking_take_while_digit_or_sep()
                 .collect();
 
-            // TODO: this is ugly and hacky. fix.
-            let mut should_check_for_e = true;
-
-            if let Some('.') = self.iter.peek() {
-                self.iter.next();
-                if self.iter.peek().filter(|c| c.is_ascii_digit()).is_some() {
-                    buf.push('.');
-                    buf.extend(
-                        self.iter
-                            .peeking_take_while(|c| c.is_ascii_digit() || matches!(c, ' ' | '_')),
-                    );
-                } else {
-                    self.token_buffer.insert(0, Ok(Token::Dot));
-                    should_check_for_e = false;
-                }
+            if let (Some('.'), Some('0'..='9')) =
+                (self.iter.peek().map(|i| *i), self.iter.peek_two_ahead())
+            {
+                buf.extend(self.iter.next());
+                buf.extend(
+                    self.iter
+                        .peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_')),
+                );
             }
 
-            if should_check_for_e {
-                if let Some('e') = self.iter.peek() {
-                    self.iter.next();
-                    match self.iter.peek() {
-                        // `e` is part of the number
-                        Some(c) if c.is_ascii_digit() => {
-                            buf.push('e');
-                            buf.extend(self.iter.peeking_take_while(|c| {
-                                c.is_ascii_digit() || matches!(c, ' ' | '_')
-                            }));
-                        }
-                        // `e` is part of/an ident
-                        _ => {
-                            match self.next() {
-                                // `e` is the first letter of the ident
-                                Some(Ok(Token::Ident(mut value))) => {
-                                    value.insert(0, 'e');
-                                    self.token_buffer.insert(0, Ok(Token::Ident(value)));
-                                }
-                                // `e` is the whole ident
-                                Some(other) => {
-                                    self.token_buffer
-                                        .insert(0, Ok(Token::Ident("e".to_owned())));
-                                    self.token_buffer.insert(0, other);
-                                }
-                                None => (),
-                            }
-                        }
-                    }
-                }
+            if let (Some('e'), Some('0'..='9')) =
+                (self.iter.peek().map(|i| *i), self.iter.peek_two_ahead())
+            {
+                buf.extend(self.iter.next());
+                buf.extend(
+                    self.iter
+                        .peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_')),
+                );
             }
 
             if buf.contains("  ") || buf.contains("__") {
                 Err(InvalidNumError)
             } else {
+                // Debug assertions
+                {
+                    for c in ['.', 'e'] {
+                        debug_assert!(
+                            buf.chars().filter(|&i| i == c).count() < 2,
+                            "didn't catch num that contains more than one `{}`: {:?}",
+                            c,
+                            buf
+                        );
+                    }
+                    debug_assert!(
+                        buf.chars()
+                            .all(|i| matches!(i, '0'..='9' | '.' | ' ' | '_' | 'e')),
+                        "didn't catch num that contains non-num characters: {:?}",
+                        buf
+                    );
+                }
+
                 Ok(Token::Num(buf))
             }
         }
