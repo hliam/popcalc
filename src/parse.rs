@@ -42,7 +42,6 @@ pub mod lex {
     #[derive(Debug, Clone)]
     pub struct Lexer<I: Iterator<Item = char>> {
         iter: std::iter::Peekable<I>,
-        token_buffer: Vec<Result<Token, InvalidNumError>>,
     }
 
     impl<I: Iterator<Item = char> + Clone> Lexer<I> {
@@ -120,6 +119,9 @@ pub mod lex {
                 (self.iter.peek().map(|i| *i), self.iter.peek_two_ahead())
             {
                 buf.extend(self.iter.next());
+                if let Some('e') = self.iter.peek() {
+                    return Err(InvalidNumError);
+                }
                 buf.extend(
                     self.iter
                         .peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_')),
@@ -139,24 +141,6 @@ pub mod lex {
             if buf.contains("  ") || buf.contains("__") {
                 Err(InvalidNumError)
             } else {
-                // Debug assertions
-                {
-                    for c in ['.', 'e'] {
-                        debug_assert!(
-                            buf.chars().filter(|&i| i == c).count() < 2,
-                            "didn't catch num that contains more than one `{}`: {:?}",
-                            c,
-                            buf
-                        );
-                    }
-                    debug_assert!(
-                        buf.chars()
-                            .all(|i| matches!(i, '0'..='9' | '.' | ' ' | '_' | 'e')),
-                        "didn't catch num that contains non-num characters: {:?}",
-                        buf
-                    );
-                }
-
                 Ok(Token::Num(buf))
             }
         }
@@ -177,7 +161,6 @@ pub mod lex {
         pub fn new(s: &'a str) -> Self {
             Self {
                 iter: s.chars().peekable(),
-                token_buffer: Vec::new(),
             }
         }
     }
@@ -185,12 +168,8 @@ pub mod lex {
     impl<'a, I: Iterator<Item = char> + Clone> Iterator for Lexer<I> {
         type Item = Result<Token, InvalidNumError>;
 
+        #[inline]
         fn next(&mut self) -> Option<Self::Item> {
-            // Try to pop out of the buffer first
-            if !self.token_buffer.is_empty() {
-                return self.token_buffer.pop();
-            }
-
             self.iter.peek()?;
 
             // Skip whitespace
@@ -207,6 +186,22 @@ pub mod lex {
             }
 
             Some(self.try_consume_num())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn iter_peek_two_ahead() {
+            use crate::parse::lex::IterExt;
+
+            let mut iter = [1, 2, 3, 4].iter();
+            assert_eq!(iter.peek_two_ahead(), Some(&2));
+            iter.next();
+            assert_eq!(iter.peek_two_ahead(), Some(&3));
+            iter.next();
+            iter.next();
+            assert_eq!(iter.peek_two_ahead(), None);
         }
     }
 }
