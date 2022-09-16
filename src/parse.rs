@@ -157,36 +157,44 @@ pub mod lex {
             // to be a number).
             // '+' and '-' are considered unary ops and are parsed by the op method, not here.
 
-            // I spent multiple hours trying to make the following function. you can't. not until we
-            //get `impl trait` in method return types. don't try.
-
             /// Like `take_while` but only takes digits or separator characters, and doesn't consume
             /// the first non-matching item.
             fn peeking_take_digit_or_sep<'a, I: Iterator<Item = char>>(
                 iter: &'a mut std::iter::Peekable<I>,
             ) -> peeking_take_while::PeekingTakeWhile<'a, I, impl FnMut(&char) -> bool>
             {
+                // TODO: change this to check for double consecutive ` `/`_`s then delete the check
+                // at the bottom of this function.
                 iter.peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_'))
+            }
+
+            /// Reads a char (`'.'` or `'e'`) component of the number then all following digits into
+            /// a buffer.
+            ///
+            /// The next two characters of the iterator should be `c` followed by a digit, otherwise
+            /// nothing happens.
+            fn maybe_read_char_then_digits<'a, I: Iterator<Item = char> + Clone>(
+                iter: &'a mut std::iter::Peekable<I>,
+                c: char,
+                buf: &mut String,
+            ) {
+                // TODO: cleanup once we get if-let chaining.
+                match (iter.peek().map(|i| *i), iter.peek_two_ahead()) {
+                    (Some(a), Some('0'..='9')) if a == c => {
+                        buf.extend(peeking_take_digit_or_sep(iter))
+                    }
+                    _ => (),
+                }
             }
 
             // Take up to either `.`, `e`, or the end of the num.
             let mut buf: String = peeking_take_digit_or_sep(&mut self.iter).collect();
 
-            // Check for the decimal.
-            if let (Some('.'), Some('0'..='9')) =
-                (self.iter.peek().map(|i| *i), self.iter.peek_two_ahead())
-            {
-                buf.extend(peeking_take_digit_or_sep(&mut self.iter));
-            }
+            maybe_read_char_then_digits(&mut self.iter, '.', &mut buf);
+            maybe_read_char_then_digits(&mut self.iter, 'e', &mut buf);
 
-            // check for the e.
-            if let (Some('e'), Some('0'..='9')) =
-                (self.iter.peek().map(|i| *i), self.iter.peek_two_ahead())
+            if buf.contains("  ") || buf.contains("__") || buf.contains(" _") || buf.contains("_ ")
             {
-                buf.extend(peeking_take_digit_or_sep(&mut self.iter));
-            }
-
-            if buf.contains("  ") || buf.contains("__") {
                 Err(InvalidNumError)
             } else {
                 Ok(Token::Num(buf.into()))
