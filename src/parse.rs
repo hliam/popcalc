@@ -17,7 +17,7 @@ pub mod lex {
     use super::Num;
 
     /// A lexical token.
-    /// 
+    ///
     /// Some symbols (such as `**` and `^`) are folded into one token here. Mostly because having an
     /// intermediate representation step is too cumbersome to justify.
     #[derive(Debug, Clone, Eq, PartialEq)]
@@ -45,6 +45,27 @@ pub mod lex {
         Pow,
         Factorial,
         Dollar,
+    }
+
+    impl Token {
+        fn precedence(&self) -> Option<u8> {
+            use Token::*;
+
+            // TODO: idk about any of this
+            // parens especially
+            Some(match self {
+                Ident(_) | Num(_) | Semicolon | Comma => return None,
+                OpenParen | CloseParen | OpenBracket | CloseBracket => 0,
+                Factorial | Dollar => 1,
+                Dot => 1,
+                Pow => 2,
+                Mul | Div => 3,
+                Add | Sub => 4,
+                EqualityTest | InequalityTest | GreaterThan | LessThan | GreaterOrEqual
+                | LessOrEqual => 5,
+                Equal => 6,
+            })
+        }
     }
 
     trait IterExt<T> {
@@ -127,7 +148,7 @@ pub mod lex {
         }
 
         /// Consume a number from the front of the source iterator.
-        /// 
+        ///
         /// It's assumed that an op and ident have already been checked for, so if this function is
         /// being called, the front of the source iter should be a number. An error will be returned
         /// if it isn't or if the number is invalid.
@@ -136,37 +157,33 @@ pub mod lex {
             // to be a number).
             // '+' and '-' are considered unary ops and are parsed by the op method, not here.
 
+            // I spent multiple hours trying to make the following function. you can't. not until we
+            //get `impl trait` in method return types. don't try.
+
+            /// Like `take_while` but only takes digits or separator characters, and doesn't consume
+            /// the first non-matching item.
+            fn peeking_take_digit_or_sep<'a, I: Iterator<Item = char>>(
+                iter: &'a mut std::iter::Peekable<I>,
+            ) -> peeking_take_while::PeekingTakeWhile<'a, I, impl FnMut(&char) -> bool>
+            {
+                iter.peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_'))
+            }
+
             // Take up to either `.`, `e`, or the end of the num.
-            let mut buf: String = self
-                .iter
-                .peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_'))
-                // .peeking_take_while_digit_or_sep()
-                .collect();
+            let mut buf: String = peeking_take_digit_or_sep(&mut self.iter).collect();
 
             // Check for the decimal.
             if let (Some('.'), Some('0'..='9')) =
                 (self.iter.peek().map(|i| *i), self.iter.peek_two_ahead())
             {
-                buf.extend(self.iter.next());
-                // Look for `.e` (which is invalid).
-                if let Some('e') = self.iter.peek() {
-                    return Err(InvalidNumError);
-                }
-                buf.extend(
-                    self.iter
-                        .peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_')),
-                );
+                buf.extend(peeking_take_digit_or_sep(&mut self.iter));
             }
 
             // check for the e.
             if let (Some('e'), Some('0'..='9')) =
                 (self.iter.peek().map(|i| *i), self.iter.peek_two_ahead())
             {
-                buf.extend(self.iter.next());
-                buf.extend(
-                    self.iter
-                        .peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_')),
-                );
+                buf.extend(peeking_take_digit_or_sep(&mut self.iter));
             }
 
             if buf.contains("  ") || buf.contains("__") {
@@ -179,7 +196,7 @@ pub mod lex {
 
     // TODO: give this struct some semantic information once everything is working.
     /// An error indicating an invalid number.
-    /// 
+    ///
     #[derive(Debug, Copy, Clone)]
     pub struct InvalidNumError;
     impl std::error::Error for InvalidNumError {}
@@ -204,12 +221,12 @@ pub mod lex {
 
         #[inline]
         fn next(&mut self) -> Option<Self::Item> {
-            self.iter.peek()?;
-
             // Skip whitespace
             self.iter
                 .peeking_take_while(|c| c.is_ascii_whitespace())
                 .for_each(drop);
+
+            self.iter.peek()?;
 
             if let Some(op) = self.maybe_consume_op() {
                 return Some(Ok(op));
@@ -281,6 +298,62 @@ pub mod lex {
             // assert_tokens!("5", Num(5));
 
             Ok(())
+        }
+    }
+}
+
+mod ast {
+    use super::lex::{Lexer, Token};
+    use super::Num;
+
+    pub enum Expr {
+        Ident(String),
+        Num(Num),
+        // Binary ops
+        Dot(Box<Expr>, Box<Expr>),
+        Equal(Box<Expr>, Box<Expr>),
+        EqualityTest(Box<Expr>, Box<Expr>),
+        InequalityTest(Box<Expr>, Box<Expr>),
+        GreaterThan(Box<Expr>, Box<Expr>),
+        LessThan(Box<Expr>, Box<Expr>),
+        GreaterOrEqual(Box<Expr>, Box<Expr>),
+        LessOrEqual(Box<Expr>, Box<Expr>),
+        Add(Box<Expr>, Box<Expr>),
+        Sub(Box<Expr>, Box<Expr>),
+        Mul(Box<Expr>, Box<Expr>),
+        Div(Box<Expr>, Box<Expr>),
+        Pow(Box<Expr>, Box<Expr>),
+        // Unary ops
+        Parens(Box<Expr>),
+        Brackets(Box<Expr>),
+        Factorial(Box<Expr>),
+        Dollar(Box<Expr>),
+    }
+
+    pub struct ASTParser<I: Iterator<Item = char> + Clone> {
+        lexer: Lexer<I>,
+    }
+
+    impl<I: Iterator<Item = char> + Clone> ASTParser<I> {
+        /// Creates a new `ASTParser` from a `Lexer`.
+        fn new(lexer: Lexer<I>) -> Self {
+            Self { lexer }
+        }
+    }
+
+    impl<I: Iterator<Item = char> + Clone> Iterator for ASTParser<I> {
+        type Item = Expr;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            use Token::*;
+
+            let mut queue: Vec<Token> = Vec::new();
+
+            loop {
+                let token = self.lexer.next()?;
+            }
+
+            todo!()
         }
     }
 }
