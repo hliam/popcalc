@@ -23,7 +23,7 @@ pub mod lex {
     #[derive(Debug, Clone, Eq, PartialEq)]
     pub enum Token {
         Ident(String),
-        Num(Num),
+        Num(String), // TODO: make this a `Num` & not a string.
         Semicolon,
         Comma,
         Dot,
@@ -157,15 +157,24 @@ pub mod lex {
             // to be a number).
             // '+' and '-' are considered unary ops and are parsed by the op method, not here.
 
-            /// Like `take_while` but only takes digits or separator characters, and doesn't consume
-            /// the first non-matching item.
-            fn peeking_take_digit_or_sep<'a, I: Iterator<Item = char>>(
-                iter: &'a mut std::iter::Peekable<I>,
-            ) -> peeking_take_while::PeekingTakeWhile<'a, I, impl FnMut(&char) -> bool>
-            {
-                // TODO: change this to check for double consecutive ` `/`_`s then delete the check
-                // at the bottom of this function.
+            /// Reads digits or separators out of `iter` and into `buf`.
+            ///
+            /// An error will be returned on two consecutive separators.
+            fn read_digits_or_seps(
+                iter: &mut std::iter::Peekable<impl Iterator<Item = char>>,
+                buf: &mut String,
+            ) -> Result<(), InvalidNumError> {
                 iter.peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_'))
+                    .try_fold(false, |last_was_sep, c| {
+                        buf.push(c);
+
+                        // TODO: clean up once we have if-let chaining
+                        Ok(match c {
+                            ' ' | '_' if last_was_sep => return Err(InvalidNumError),
+                            _ => matches!(c, ' ' | '_'),
+                        })
+                    })
+                    .map(drop)
             }
 
             /// Reads a char (`'.'` or `'e'`) component of the number then all following digits into
@@ -177,28 +186,36 @@ pub mod lex {
                 iter: &'a mut std::iter::Peekable<I>,
                 c: char,
                 buf: &mut String,
-            ) {
+            ) -> Result<(), InvalidNumError> {
                 // TODO: cleanup once we get if-let chaining.
                 match (iter.peek().map(|i| *i), iter.peek_two_ahead()) {
                     (Some(a), Some('0'..='9')) if a == c => {
-                        buf.extend(peeking_take_digit_or_sep(iter))
+                        buf.extend(iter.next());
+                        read_digits_or_seps(iter, buf)
                     }
-                    _ => (),
+                    _ => Ok(()),
                 }
             }
 
-            // Take up to either `.`, `e`, or the end of the num.
-            let mut buf: String = peeking_take_digit_or_sep(&mut self.iter).collect();
-
-            maybe_read_char_then_digits(&mut self.iter, '.', &mut buf);
-            maybe_read_char_then_digits(&mut self.iter, 'e', &mut buf);
-
-            if buf.contains("  ") || buf.contains("__") || buf.contains(" _") || buf.contains("_ ")
-            {
-                Err(InvalidNumError)
-            } else {
-                Ok(Token::Num(buf.into()))
+            // Something is malformed if the next char isn't a digit or dot.
+            // TODO: cleanup once we get if-let chaining.
+            match self.iter.peek() {
+                Some(c) if !matches!(c, '0'..='9' | '.') => return Err(InvalidNumError),
+                _ => (),
             }
+
+            let mut buf = String::new();
+            // Take up to either `.`, `e`, or the end of the num.
+            read_digits_or_seps(&mut self.iter, &mut buf)?;
+            // Take up to the `e` or the end of the num.
+            maybe_read_char_then_digits(&mut self.iter, '.', &mut buf)?;
+            // Take up to the end of the num.
+            maybe_read_char_then_digits(&mut self.iter, 'e', &mut buf)?;
+
+            // TODO: at some point when the the number backend is decided, compose it directly from
+            // the parts.
+            // TODO: make this return a `Num`. The string is for testing.
+            Ok(Token::Num(buf))
         }
     }
 
@@ -344,6 +361,7 @@ mod ast {
 
     impl<I: Iterator<Item = char> + Clone> ASTParser<I> {
         /// Creates a new `ASTParser` from a `Lexer`.
+        #[must_use]
         fn new(lexer: Lexer<I>) -> Self {
             Self { lexer }
         }
