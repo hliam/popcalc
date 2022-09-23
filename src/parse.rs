@@ -13,6 +13,7 @@ impl<S: AsRef<str>> From<S> for Num {
 pub mod lex {
     use peeking_take_while::PeekableExt;
     use std::fmt::Display;
+    use std::mem::replace;
 
     use super::Num;
 
@@ -157,26 +158,41 @@ pub mod lex {
             // to be a number).
             // '+' and '-' are considered unary ops and are parsed by the op method, not here.
 
-            /// Reads digits or separators out of `iter` and into `buf`.
-            ///
-            /// An error will be returned on two consecutive separators.
-            fn read_digits_or_seps(
-                iter: &mut std::iter::Peekable<impl Iterator<Item = char>>,
-                buf: &mut String,
-            ) -> Result<(), InvalidNumError> {
-                iter.peeking_take_while(|c| matches!(c, '0'..='9' | ' ' | '_'))
-                    .try_fold(false, |last_was_sep, c| {
-                        buf.push(c);
+            /// An iterator that takes digits or separators (by peeking).
+            struct PeekingTakeDigitsOrSeps<'a, I: Iterator<Item = char>> {
+                iter: &'a mut std::iter::Peekable<I>,
+                prev_was_sep: bool,
+            }
+            impl<I: Iterator<Item = char>> Iterator for PeekingTakeDigitsOrSeps<'_, I> {
+                type Item = char;
 
-                        // TODO: clean up once we have if-let chaining
-                        Ok(match c {
-                            ' ' | '_' if last_was_sep => return Err(InvalidNumError),
-                            _ => matches!(c, ' ' | '_'),
-                        })
+                fn next(&mut self) -> Option<Self::Item> {
+                    self.iter.next_if(|c| {
+                        let old_was_sep = replace(&mut self.prev_was_sep, matches!(c, ' ' | '_'));
+                        (self.prev_was_sep || c.is_ascii_digit())
+                            && !(self.prev_was_sep && old_was_sep)
                     })
-                    .map(drop)
+                }
+            }
+            trait IterExt<I: Iterator<Item = char>> {
+                fn peeking_take_digits_or_seps(&mut self) -> PeekingTakeDigitsOrSeps<I>;
+            }
+            impl<I: Iterator<Item = char>> IterExt<I> for std::iter::Peekable<I> {
+                /// Creates an iterator that takes digits or separators (by peeking).
+                /// 
+                /// Because the returned iterator peeks at the items, the first non-digit,
+                /// non-separator item isn't dropped like it might otherwise be.
+                /// 
+                /// Separator characters are `' '` and `'_'`.
+                fn peeking_take_digits_or_seps(&mut self) -> PeekingTakeDigitsOrSeps<I> {
+                    PeekingTakeDigitsOrSeps {
+                        iter: self,
+                        prev_was_sep: false,
+                    }
+                }
             }
 
+            // TODO: maybe turn this into an iterator adapter.
             /// Reads a char (`'.'` or `'e'`) component of the number then all following digits into
             /// a buffer.
             ///
@@ -186,14 +202,14 @@ pub mod lex {
                 iter: &'a mut std::iter::Peekable<I>,
                 c: char,
                 buf: &mut String,
-            ) -> Result<(), InvalidNumError> {
+            ) {
                 // TODO: cleanup once we get if-let chaining.
                 match (iter.peek().map(|i| *i), iter.peek_two_ahead()) {
                     (Some(a), Some('0'..='9')) if a == c => {
                         buf.extend(iter.next());
-                        read_digits_or_seps(iter, buf)
+                        buf.extend(iter.peeking_take_digits_or_seps());
                     }
-                    _ => Ok(()),
+                    _ => (),
                 }
             }
 
@@ -204,13 +220,12 @@ pub mod lex {
                 _ => (),
             }
 
-            let mut buf = String::new();
             // Take up to either `.`, `e`, or the end of the num.
-            read_digits_or_seps(&mut self.iter, &mut buf)?;
+            let mut buf: String = self.iter.peeking_take_digits_or_seps().collect();
             // Take up to the `e` or the end of the num.
-            maybe_read_char_then_digits(&mut self.iter, '.', &mut buf)?;
+            maybe_read_char_then_digits(&mut self.iter, '.', &mut buf);
             // Take up to the end of the num.
-            maybe_read_char_then_digits(&mut self.iter, 'e', &mut buf)?;
+            maybe_read_char_then_digits(&mut self.iter, 'e', &mut buf);
 
             // TODO: at some point when the the number backend is decided, compose it directly from
             // the parts.
@@ -375,9 +390,9 @@ mod ast {
 
             let mut queue: Vec<Token> = Vec::new();
 
-            loop {
-                let token = self.lexer.next()?;
-            }
+            // loop {
+            //     let token = self.lexer.next()?;
+            // }
 
             todo!()
         }
