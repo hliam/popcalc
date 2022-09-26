@@ -142,7 +142,7 @@ pub mod lex {
             (c.is_ascii_alphabetic() || c == '_').then(|| {
                 Token::Ident(
                     self.iter
-                        .peeking_take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                        .peeking_take_while(|&c| c.is_ascii_alphabetic() || c == '_')
                         .collect(),
                 )
             })
@@ -192,7 +192,6 @@ pub mod lex {
                 }
             }
 
-            // TODO: maybe turn this into an iterator adapter.
             /// Reads a char (`'.'` or `'e'`) component of the number then all following digits into
             /// a buffer.
             ///
